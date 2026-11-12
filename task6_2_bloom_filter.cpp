@@ -36,11 +36,20 @@ void runHashTask() {
                 throw runtime_error("Expected operation and key");
             }
             if (op == "ADD") {
-                chainAdd(t, key);
+                int value;
+                if (!(cin >> value)) {
+                    throw runtime_error("Expected ADD key value");
+                }
+                chainAdd(t, key, value);
             } else if (op == "DEL") {
                 chainDelete(t, key);
             } else if (op == "GET") {
-                cout << chainContains(t, key) << '\n';
+                const int* value = chainGet(t, key);
+                if (value) {
+                    cout << *value << '\n';
+                } else {
+                    cout << "NOT FOUND\n";
+                }
             } else if (op == "BLOOM") {
                 cout << bloomMaybeContains(t, key) << '\n';
             } else {
