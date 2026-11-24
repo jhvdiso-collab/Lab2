@@ -3,6 +3,7 @@
 struct SinglyNode {
     int data;
     SinglyNode* next;
+    int value = 0;
 };
 void pushFront(SinglyNode*& head, int value);
 void pushBack(SinglyNode*& head, int value);

@@ -32,33 +32,48 @@ void initChain(ChainTable& t, int capacity) {
     t.size = 0;
     fillArray(t.bloom, t.capacity);
 }
-bool chainContains(const ChainTable& t, int key) {
+bool chainGet(const ChainTable& t, int key, int& value) {
     if (!bloomMaybeContains(t, key)) {
         return false;
     }
     int p = static_cast<int>(hashKey(key, 0) % t.capacity);
-    return findSingly(t.buckets[p], key) >= 0;
+    for (const SinglyNode* node = t.buckets[p]; node; node = node->next) {
+        if (node->data == key) {
+            value = node->value;
+            return true;
+        }
+    }
+    return false;
+}
+bool chainContains(const ChainTable& t, int key) {
+    int value;
+    return chainGet(t, key, value);
 }
 static void growChain(ChainTable& t) {
     ChainTable next{};
     initChain(next, doubled(t.capacity));
     for (int i = 0; i < t.capacity; ++i) {
         for (SinglyNode* p = t.buckets[i]; p; p = p->next) {
-            chainAdd(next, p->data);
+            chainAdd(next, p->data, p->value);
         }
     }
     freeChain(t);
     t = next;
 }
-bool chainAdd(ChainTable& t, int key) {
-    if (chainContains(t, key)) {
-        return false;
+bool chainAdd(ChainTable& t, int key, int value) {
+    int bucket = static_cast<int>(hashKey(key, 0) % t.capacity);
+    for (SinglyNode* node = t.buckets[bucket]; node; node = node->next) {
+        if (node->data == key) {
+            node->value = value;
+            return false;
+        }
     }
     if (t.size >= t.capacity) {
         growChain(t);
     }
     int p = static_cast<int>(hashKey(key, 0) % t.capacity);
     pushFront(t.buckets[p], key);
+    t.buckets[p]->value = value;
     bloomAdd(t, key);
     ++t.size;
     return true;
@@ -83,6 +98,7 @@ void freeChain(ChainTable& t) {
 void initCuckoo(CuckooTable& t, int capacity) {
     fillArray(t.keys, max(16, capacity));
     fillArray(t.used, t.keys.size);
+    fillArray(t.values, t.keys.size);
     t.size = 0;
     t.seed = 1;
 }
@@ -90,58 +106,75 @@ static int cuckooPosition(const CuckooTable& t, int key, int which) {
     int half = t.keys.size / 2;
     return static_cast<int>(hashKey(key, t.seed + which) % half) + which * half;
 }
-bool cuckooContains(const CuckooTable& t, int key) {
+bool cuckooGet(const CuckooTable& t, int key, int& value) {
     for (int i = 0; i < 2; ++i) {
         int p = cuckooPosition(t, key, i);
         if (t.used.data[p] && t.keys.data[p] == key) {
+            value = t.values.data[p];
             return true;
         }
     }
     return false;
 }
-static bool placeCuckoo(CuckooTable& t, int& key) {
+bool cuckooContains(const CuckooTable& t, int key) {
+    int value;
+    return cuckooGet(t, key, value);
+}
+static bool placeCuckoo(CuckooTable& t, int& key, int& value) {
     int which = 0;
     for (int step = 0; step < 128; ++step) {
         int p = cuckooPosition(t, key, which);
         if (!t.used.data[p]) {
             t.used.data[p] = 1;
             t.keys.data[p] = key;
+            t.values.data[p] = value;
             return true;
         }
         swap(key, t.keys.data[p]);
+        swap(value, t.values.data[p]);
         which = 1 - which;
     }
     return false;
 }
-bool cuckooAdd(CuckooTable& t, int key) {
-    if (cuckooContains(t, key)) {
-        return false;
+bool cuckooAdd(CuckooTable& t, int key, int value) {
+    for (int i = 0; i < 2; ++i) {
+        int p = cuckooPosition(t, key, i);
+        if (t.used.data[p] && t.keys.data[p] == key) {
+            t.values.data[p] = value;
+            return false;
+        }
     }
-    if (t.size < t.keys.size / 3 && placeCuckoo(t, key)) {
+    if (t.size < t.keys.size / 3 && placeCuckoo(t, key, value)) {
         ++t.size;
         return true;
     }
-    DynamicArray all{};
+    DynamicArray all{}, allValues{};
     initArray(all);
+    initArray(allValues);
     for (int i = 0; i < t.keys.size; ++i) {
         if (t.used.data[i]) {
             pushBack(all, t.keys.data[i]);
+            pushBack(allValues, t.values.data[i]);
         }
     }
     pushBack(all, key);
+    pushBack(allValues, value);
     int capacity = t.keys.size;
     bool done = false;
     while (!done) {
         capacity = doubled(capacity);
         freeArray(t.keys);
         freeArray(t.used);
+        freeArray(t.values);
         fillArray(t.keys, capacity);
+        fillArray(t.values, capacity);
         fillArray(t.used, capacity);
         t.seed += 2;
         done = true;
         for (int i = 0; i < all.size; ++i) {
-            int value = all.data[i];
-            if (!placeCuckoo(t, value)) {
+            int k = all.data[i];
+            int v = allValues.data[i];
+            if (!placeCuckoo(t, k, v)) {
                 done = false;
                 break;
             }
@@ -149,6 +182,7 @@ bool cuckooAdd(CuckooTable& t, int key) {
     }
     t.size = all.size;
     freeArray(all);
+    freeArray(allValues);
     return true;
 }
 bool cuckooDelete(CuckooTable& t, int key) {
@@ -165,6 +199,7 @@ bool cuckooDelete(CuckooTable& t, int key) {
 void freeCuckoo(CuckooTable& t) {
     freeArray(t.keys);
     freeArray(t.used);
+    freeArray(t.values);
     t.size = 0;
 }
 void runBenchmark() {
@@ -182,14 +217,19 @@ void runBenchmark() {
         auto start = Clock::now();
         for (int i = 0; i < n; ++i) {
             if (method == 0) {
-                chainAdd(a, i);
+                chainAdd(a, i, -i);
             } else {
-                cuckooAdd(b, i);
+                cuckooAdd(b, i, -i);
             }
         }
         auto inserted = Clock::now();
         for (int i = 0; i < n * 2; ++i) {
-            found += method == 0 ? chainContains(a, i) : cuckooContains(b, i);
+            int value;
+            bool ok = method == 0 ? chainGet(a, i, value) : cuckooGet(b, i, value);
+            if (ok && value != -i) {
+                throw runtime_error("Incorrect hash table value");
+            }
+            found += ok;
         }
         auto searched = Clock::now();
         for (int i = 0; i < n; ++i) {
